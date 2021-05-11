@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
+import android.util.LruCache;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
@@ -20,10 +21,36 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
+    private LruCache<String, Bitmap> mMemoryCache;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        RetainFragment retainFragment =
+                RetainFragment.findOrCreateRetainFragment(getSupportFragmentManager());
+        mMemoryCache = retainFragment.mRetainedCache;
+
+        if (mMemoryCache == null) {
+            // Get max available VM memory, exceeding this amount will throw an
+            // OutOfMomory exception. Stored in kilobytes as LruCache takes an
+            // int in its constructor.
+            final int maxMemory = (int) (Runtime.getRuntime().maxMemory() / 1024);
+
+            // Use 1/8th of the available memory for this memory cache.
+            final int cacheSize = maxMemory / 8;
+
+            mMemoryCache = new LruCache<String, Bitmap>(cacheSize) {
+                // 匿名内部クラスとして実装し、その一つの要素に対してそれがどれだけのサイズを利用しているか
+                @Override
+                protected int sizeOf(String key, Bitmap bitmap) {
+                    // The cache size will be measured in kilobytes rather than
+                    // number of items.
+                    return bitmap.getByteCount() / 1024;
+                }
+            };
+        }
 
         GridView mGridView = (GridView) findViewById(R.id.gridView);
         mGridView.setNumColumns(3);
@@ -68,12 +95,33 @@ public class MainActivity extends AppCompatActivity {
         mGridView.setAdapter(mAdapter);
     }
 
+    public void addBitmapToMemoryCache(String key, Bitmap bitmap) {
+        if (getBitmapFromMemCache(key) == null) {
+            mMemoryCache.put(key, bitmap);
+        }
+    }
+
+    public Bitmap getBitmapFromMemCache(String key) {
+        return mMemoryCache.get(key);
+    }
+
     // ImageViewにビットマップ画像を読み込む
     public void loadBitmap(int resId, ImageView imageView) {
-        // AsyncTaskクラスの子クラスのインスタンス生成
-        BitmapWorkTask task = new BitmapWorkTask(imageView, getResources());
-        // 非同期に実行
-        task.execute(resId);
+//        // AsyncTaskクラスの子クラスのインスタンス生成
+//        BitmapWorkTask task = new BitmapWorkTask(imageView, getResources());
+//        // 非同期に実行
+//        task.execute(resId);
+
+        final String imageKey = String.valueOf(resId);
+        final Bitmap bitmap = getBitmapFromMemCache(imageKey);
+        // まずはキャッシュから取得、キャッシュが存在しない場合はとりあえずアイコンを表示後に非同期で実行処理
+        if (bitmap != null) {
+            imageView.setImageBitmap(bitmap);
+        } else {
+            imageView.setImageResource(R.mipmap.ic_launcher);
+            BitmapWorkTask task = new BitmapWorkTask(imageView, getResources());
+            task.execute(resId);
+        }
     }
 
     // 引数は、execute実行時の引数の型、戻り値の型、バックグラウンド処理の結果取得される値の型
@@ -97,7 +145,12 @@ public class MainActivity extends AppCompatActivity {
         // executeメソッド呼び出し時にバックグラウンドスレッドで実行される処理
         @Override
         protected Bitmap doInBackground(Integer... params) {
-            return decodeSampledBitmapFromResource(resources, params[0], 180, 320);
+//            return decodeSampledBitmapFromResource(resources, params[0], 180, 320);
+
+            // 縮小後、キャッシュに追加する
+            Bitmap bitmap = decodeSampledBitmapFromResource(resources, params[0], 180, 320);
+            addBitmapToMemoryCache(String.valueOf(params[0]), bitmap);
+            return bitmap;
         }
 
         // Once complete, see if ImageView is still around and set bitmap.
